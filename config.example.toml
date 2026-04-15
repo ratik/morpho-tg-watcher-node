@@ -1,0 +1,41 @@
+[app]
+name = "morpho-tg-watcher-node"
+environment = "development"
+log_level = "info"
+
+[telegram]
+token = ""
+max_subscriptions_per_user = 50
+
+[morpho]
+graphql_url = ""
+registry_ttl_seconds = 1800
+
+[database]
+path = "/data/db.sqlite"
+busy_timeout_ms = 5000
+wal = true
+
+[polling]
+interval_seconds = 30
+metric_stale_after_multiplier = 5
+
+[multicall]
+batch_size = 100
+
+[chains.ethereum]
+enabled = true
+rpc_urls = []
+
+[chains.base]
+enabled = true
+rpc_urls = []
+
+[chains.arbitrum]
+enabled = true
+rpc_urls = []
+
+[backups]
+enabled = false
+s3_url = ""
+retention_days = 90

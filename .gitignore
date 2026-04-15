@@ -1,0 +1,7 @@
+/node_modules
+/dist
+.env
+config.toml
+data/*.sqlite
+.DS_Store
+coverage
