@@ -28,6 +28,21 @@ export type SubscriptionRecord = {
   version: 'v1' | 'v2';
 };
 
+export type SubscribedVaultRecord = VaultRecord & {
+  monitor_types: MonitorType[];
+};
+
+export type VaultMetricRecord = {
+  vault_id: string;
+  timestamp: string;
+  deposits: string | null;
+  available_liquidity: string | null;
+};
+
+export type ActiveSubscriptionRecord = SubscriptionRecord & {
+  last_alerted: boolean;
+};
+
 type VaultRow = {
   vault_id: string;
   version: 'v1' | 'v2';
@@ -44,6 +59,10 @@ type VaultRow = {
 };
 
 type SubscriptionRow = Omit<SubscriptionRecord, 'active'> & { active: number };
+type ActiveSubscriptionRow = Omit<ActiveSubscriptionRecord, 'active' | 'last_alerted'> & {
+  active: number;
+  last_alerted: number;
+};
 
 function mapVaultRow(row: VaultRow): VaultRecord {
   return {
@@ -66,6 +85,14 @@ function mapSubscriptionRow(row: SubscriptionRow): SubscriptionRecord {
   return {
     ...row,
     active: row.active === 1,
+  };
+}
+
+function mapActiveSubscriptionRow(row: ActiveSubscriptionRow): ActiveSubscriptionRecord {
+  return {
+    ...row,
+    active: row.active === 1,
+    last_alerted: row.last_alerted === 1,
   };
 }
 
@@ -327,4 +354,131 @@ export function deactivateSubscription(
     .run(now, params.id, params.userId, params.chatId);
 
   return result.changes > 0;
+}
+
+export function listSubscribedVaults(db: BetterSqliteDatabase): SubscribedVaultRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT
+          v.vault_id,
+          v.version,
+          v.chain,
+          v.contract,
+          v.token_addr,
+          v.token_symbol,
+          v.decimals,
+          v.name,
+          v.morpho_meta_json,
+          v.last_seen,
+          v.updated_at,
+          v.active,
+          GROUP_CONCAT(DISTINCT s.monitor_type) AS monitor_types
+       FROM subscriptions s
+       JOIN vaults v ON v.vault_id = s.vault_id
+       WHERE s.active = 1 AND v.active = 1
+       GROUP BY v.vault_id, v.version, v.chain, v.contract, v.token_addr, v.token_symbol, v.decimals, v.name, v.morpho_meta_json, v.last_seen, v.updated_at, v.active
+       ORDER BY COALESCE(v.chain, ''), COALESCE(v.name, v.contract, v.vault_id)`,
+    )
+    .all() as Array<VaultRow & { monitor_types: string | null }>;
+
+  return rows.map((row) => ({
+    ...mapVaultRow(row),
+    monitor_types: (row.monitor_types?.split(',').filter(Boolean) ?? []) as MonitorType[],
+  }));
+}
+
+export function insertVaultMetrics(db: BetterSqliteDatabase, metrics: VaultMetricRecord[]): void {
+  if (metrics.length === 0) {
+    return;
+  }
+
+  const insert = db.prepare(
+    `INSERT INTO vault_metrics (vault_id, timestamp, deposits, available_liquidity)
+     VALUES (@vault_id, @timestamp, @deposits, @available_liquidity)`,
+  );
+
+  const transaction = db.transaction((items: VaultMetricRecord[]) => {
+    for (const metric of items) {
+      insert.run(metric);
+    }
+  });
+
+  transaction(metrics);
+}
+
+export function listActiveSubscriptionsForVaults(
+  db: BetterSqliteDatabase,
+  vaultIds: string[],
+): ActiveSubscriptionRecord[] {
+  if (vaultIds.length === 0) {
+    return [];
+  }
+
+  const placeholders = vaultIds.map(() => '?').join(', ');
+  const rows = db
+    .prepare(
+      `SELECT
+          s.id,
+          s.user_id,
+          s.chat_id,
+          s.vault_id,
+          s.monitor_type,
+          s.threshold_amount,
+          s.decimals,
+          s.created_at,
+          s.updated_at,
+          s.last_alerted,
+          s.active,
+          v.name as vault_name,
+          v.chain as vault_chain,
+          v.contract as vault_contract,
+          v.token_symbol as token_symbol,
+          v.version as version
+        FROM subscriptions s
+        JOIN vaults v ON v.vault_id = s.vault_id
+        WHERE s.active = 1 AND s.vault_id IN (${placeholders})`,
+    )
+    .all(...vaultIds) as ActiveSubscriptionRow[];
+
+  return rows.map(mapActiveSubscriptionRow);
+}
+
+export function markSubscriptionAlerted(db: BetterSqliteDatabase, subscriptionId: number): boolean {
+  const result = db
+    .prepare(
+      `UPDATE subscriptions
+       SET last_alerted = 1, updated_at = ?
+       WHERE id = ? AND active = 1 AND last_alerted = 0`,
+    )
+    .run(new Date().toISOString(), subscriptionId);
+
+  return result.changes > 0;
+}
+
+export function clearSubscriptionAlertState(db: BetterSqliteDatabase, subscriptionId: number): boolean {
+  const result = db
+    .prepare(
+      `UPDATE subscriptions
+       SET last_alerted = 0, updated_at = ?
+       WHERE id = ? AND active = 1 AND last_alerted = 1`,
+    )
+    .run(new Date().toISOString(), subscriptionId);
+
+  return result.changes > 0;
+}
+
+export function insertAlert(
+  db: BetterSqliteDatabase,
+  params: { userId: number; vaultId: string; thresholdAmount: string; payload: unknown },
+): void {
+  db.prepare(
+    `INSERT INTO alerts (user_id, vault_id, threshold_amount, alerted_at, cleared, payload_json)
+     VALUES (?, ?, ?, ?, 0, ?)`,
+  ).run(
+    params.userId,
+    params.vaultId,
+    params.thresholdAmount,
+    new Date().toISOString(),
+    JSON.stringify(params.payload),
+  );
 }

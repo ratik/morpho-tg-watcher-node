@@ -5,3 +5,4 @@ config.toml
 data/*.sqlite
 .DS_Store
 coverage
+/data

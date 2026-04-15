@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, session, type Context, type SessionFlavor } from 'grammy';
+import { Bot, InlineKeyboard, Keyboard, session, type Context, type SessionFlavor } from 'grammy';
 
 import type { AppConfig } from '../config/load-config.js';
 import {
@@ -38,6 +38,9 @@ type BotSession = {
 type BotContext = Context & SessionFlavor<BotSession>;
 
 const PAGE_SIZE = 10;
+const MAIN_BUTTON_SUBSCRIBE = '➕ Add subscription';
+const MAIN_BUTTON_SUBSCRIPTIONS = '📋 My subscriptions';
+const CANCEL_CALLBACK = 'flow:cancel';
 
 function initialSession(): BotSession {
   return {
@@ -108,13 +111,38 @@ function buildVaultSearchKeyboard(
     keyboard.row();
   }
 
-  return keyboard.text('🔙 Chains', 'sub:begin');
+  return keyboard
+    .text('✏️ Change search', 'sub:search_prompt')
+    .text('🔙 Chains', 'sub:begin')
+    .row()
+    .text('❌ Cancel', CANCEL_CALLBACK);
+}
+
+function buildMainKeyboard(): Keyboard {
+  return new Keyboard()
+    .text(MAIN_BUTTON_SUBSCRIBE)
+    .text(MAIN_BUTTON_SUBSCRIPTIONS)
+    .resized()
+    .persistent();
+}
+
+function buildPromptKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text('❌ Cancel', CANCEL_CALLBACK);
+}
+
+function buildSearchPromptKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('✍️ Enter search', 'sub:search_prompt')
+    .row()
+    .text('❌ Cancel', CANCEL_CALLBACK);
 }
 
 function buildMonitorTypeKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('Deposits', 'sub:monitor:deposits')
-    .text('Liquidity', 'sub:monitor:liquidity');
+    .text('Liquidity', 'sub:monitor:liquidity')
+    .row()
+    .text('❌ Cancel', CANCEL_CALLBACK);
 }
 
 function formatSubscription(subscription: SubscriptionRecord): string {
@@ -126,7 +154,7 @@ function formatSubscription(subscription: SubscriptionRecord): string {
   );
 
   return [
-    `#${subscription.id} ${target}`,
+    `${target}`,
     `${subscription.vault_chain || 'Unknown chain'} · ${subscription.version.toUpperCase()}`,
     `Monitor: ${monitorLabel(subscription.monitor_type)}`,
     `Threshold: ${threshold}`,
@@ -141,7 +169,7 @@ function buildSubscriptionListKeyboard(subscriptions: SubscriptionRecord[]): Inl
     keyboard.text(title.slice(0, 60), `subs:view:${subscription.id}`).row();
   }
 
-  return keyboard;
+  return keyboard.text('🏠 Main menu', 'menu:main');
 }
 
 function buildSubscriptionActionsKeyboard(subscriptionId: number): InlineKeyboard {
@@ -150,7 +178,9 @@ function buildSubscriptionActionsKeyboard(subscriptionId: number): InlineKeyboar
     .row()
     .text('🗑 Remove', `subs:remove:${subscriptionId}`)
     .row()
-    .text('🔙 Back to subscriptions', 'subs:list');
+    .text('🔙 Back to subscriptions', 'subs:list')
+    .row()
+    .text('🏠 Main menu', 'menu:main');
 }
 
 async function renderVaultSearchResults(ctx: BotContext, db: SqliteDb): Promise<void> {
@@ -194,6 +224,40 @@ async function renderVaultSearchResults(ctx: BotContext, db: SqliteDb): Promise<
   );
 }
 
+async function showMainMenu(ctx: BotContext, message = 'Choose an action:'): Promise<void> {
+  await ctx.reply(message, {
+    reply_markup: buildMainKeyboard(),
+  });
+}
+
+async function promptForSearch(ctx: BotContext, chain: string): Promise<void> {
+  ctx.session.awaiting = null;
+  await ctx.reply(`Selected ${chain}. Tap below, then send a search string for name, symbol, token, or address.`, {
+    reply_markup: buildSearchPromptKeyboard(),
+  });
+}
+
+async function startSubscriptionFlow(ctx: BotContext, db: SqliteDb): Promise<void> {
+  resetDraft(ctx);
+  const chains = listAvailableChains(db);
+
+  if (chains.length === 0) {
+    await ctx.reply('Vault registry is empty right now. Please try again in a moment.', {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  const keyboard = chains.reduce((acc, chain) => {
+    acc.text(chain, `sub:chain:${encodeValue(chain)}`).row();
+    return acc;
+  }, new InlineKeyboard());
+
+  keyboard.text('❌ Cancel', CANCEL_CALLBACK);
+
+  await ctx.reply('Choose a chain:', { reply_markup: keyboard });
+}
+
 async function renderSubscriptions(ctx: BotContext, db: SqliteDb): Promise<void> {
   const identity = requireChatAndUser(ctx);
   if (!identity) {
@@ -202,7 +266,9 @@ async function renderSubscriptions(ctx: BotContext, db: SqliteDb): Promise<void>
 
   const subscriptions = listSubscriptions(db, identity);
   if (subscriptions.length === 0) {
-    await ctx.reply('You have no active subscriptions. Use /subscribe to create one.');
+    await ctx.reply('You have no active subscriptions.', {
+      reply_markup: buildMainKeyboard(),
+    });
     return;
   }
 
@@ -219,66 +285,24 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
 
   bot.command('start', async (ctx) => {
     resetDraft(ctx);
-    await ctx.reply(
+    await showMainMenu(
+      ctx,
       [
         'Morpho watcher bot ready.',
         '',
-        'Commands:',
-        '/subscribe - create or update a subscription',
-        '/my_subs - list subscriptions',
-        '/help - show help',
-      ].join('\n'),
-    );
-  });
-
-  bot.command('help', async (ctx) => {
-    await ctx.reply(
-      [
-        'Subscription flow:',
+        'Flow:',
         '1. choose chain',
         '2. enter search string',
         '3. pick vault from paginated results',
         '4. choose deposits or liquidity',
         '5. enter threshold amount',
-        '',
-        'Commands:',
-        '/subscribe',
-        '/my_subs',
       ].join('\n'),
     );
   });
 
-  bot.command('subscribe', async (ctx) => {
-    resetDraft(ctx);
-    const chains = listAvailableChains(db);
-
-    if (chains.length === 0) {
-      await ctx.reply('Vault registry is empty right now. Please try again in a moment.');
-      return;
-    }
-
-    const keyboard = chains.reduce((acc, chain) => {
-      acc.text(chain, `sub:chain:${encodeValue(chain)}`).row();
-      return acc;
-    }, new InlineKeyboard());
-
-    await ctx.reply('Choose a chain:', { reply_markup: keyboard });
-  });
-
-  bot.command('my_subs', async (ctx) => {
-    ctx.session.awaiting = null;
-    await renderSubscriptions(ctx, db);
-  });
-
   bot.callbackQuery('sub:begin', async (ctx) => {
     await ctx.answerCallbackQuery();
-    resetDraft(ctx);
-    const chains = listAvailableChains(db);
-    const keyboard = chains.reduce((acc, chain) => {
-      acc.text(chain, `sub:chain:${encodeValue(chain)}`).row();
-      return acc;
-    }, new InlineKeyboard());
-    await ctx.reply('Choose a chain:', { reply_markup: keyboard });
+    await startSubscriptionFlow(ctx, db);
   });
 
   bot.callbackQuery(/^sub:chain:(.+)$/i, async (ctx) => {
@@ -290,8 +314,21 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
 
     const chain = decodeValue(chainMatch);
     ctx.session.draft = { chain, page: 0 };
+    await promptForSearch(ctx, chain);
+  });
+
+  bot.callbackQuery('sub:search_prompt', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const chain = ctx.session.draft.chain;
+    if (!chain) {
+      await startSubscriptionFlow(ctx, db);
+      return;
+    }
+
     ctx.session.awaiting = { type: 'search' };
-    await ctx.reply(`Selected ${chain}. Now enter a search string for name, symbol, token, or address.`);
+    await ctx.reply(`Send your search string for ${chain}.`, {
+      reply_markup: buildPromptKeyboard(),
+    });
   });
 
   bot.callbackQuery(/^sub:page:(.+?):(.+?):(\d+)$/i, async (ctx) => {
@@ -353,7 +390,20 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
     ctx.session.awaiting = { type: 'threshold' };
     await ctx.reply(
       `Selected ${monitorLabel(monitorType)} for ${formatVaultLabel(vault)}.\nEnter threshold in human units${vault.token_symbol ? ` (${vault.token_symbol})` : ''}.`,
+      { reply_markup: buildPromptKeyboard() },
     );
+  });
+
+  bot.callbackQuery(CANCEL_CALLBACK, async (ctx) => {
+    await ctx.answerCallbackQuery('Cancelled');
+    resetDraft(ctx);
+    await showMainMenu(ctx);
+  });
+
+  bot.callbackQuery('menu:main', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    resetDraft(ctx);
+    await showMainMenu(ctx);
   });
 
   bot.callbackQuery('subs:list', async (ctx) => {
@@ -403,6 +453,7 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
     ctx.session.awaiting = { type: 'edit-threshold', subscriptionId: subscription.id };
     await ctx.reply(
       `Enter new threshold for ${subscription.vault_name || subscription.vault_contract || subscription.vault_id}.\nCurrent: ${formatRawAmount(subscription.threshold_amount, subscription.decimals, subscription.token_symbol)}`,
+      { reply_markup: buildPromptKeyboard() },
     );
   });
 
@@ -418,7 +469,8 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
       ...identity,
     });
 
-    await ctx.reply(removed ? 'Subscription removed.' : 'Subscription not found.');
+    resetDraft(ctx);
+    await showMainMenu(ctx, removed ? 'Subscription removed.' : 'Subscription not found.');
   });
 
   bot.on('message:text', async (ctx) => {
@@ -428,7 +480,20 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
     }
 
     const messageText = ctx.message.text.trim();
+
+    if (messageText === MAIN_BUTTON_SUBSCRIBE) {
+      await startSubscriptionFlow(ctx, db);
+      return;
+    }
+
+    if (messageText === MAIN_BUTTON_SUBSCRIPTIONS) {
+      ctx.session.awaiting = null;
+      await renderSubscriptions(ctx, db);
+      return;
+    }
+
     if (messageText.startsWith('/')) {
+      await showMainMenu(ctx);
       return;
     }
 
@@ -473,7 +538,9 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
           decimals: vault.decimals,
         });
 
-        await ctx.reply(
+        resetDraft(ctx);
+        await showMainMenu(
+          ctx,
           [
             'Subscription saved.',
             formatVaultLabel(vault),
@@ -481,7 +548,6 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
             `Threshold: ${formatRawAmount(thresholdAmount, vault.decimals, vault.token_symbol)}`,
           ].join('\n'),
         );
-        resetDraft(ctx);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         await ctx.reply(message);
@@ -510,9 +576,9 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
           decimals: subscription.decimals,
         });
         ctx.session.awaiting = null;
-        await ctx.reply(
+        await showMainMenu(
+          ctx,
           `Threshold updated to ${formatRawAmount(thresholdAmount, subscription.decimals, subscription.token_symbol)}.`,
-          { reply_markup: buildSubscriptionActionsKeyboard(subscription.id) },
         );
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);

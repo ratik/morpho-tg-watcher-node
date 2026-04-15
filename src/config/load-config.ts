@@ -6,6 +6,11 @@ import TOML from 'toml';
 import { z } from 'zod';
 
 const fileConfigSchema = z.object({
+  app: z
+    .object({
+      log_level: z.string().optional(),
+    })
+    .optional(),
   telegram: z
     .object({
       token: z.string().optional(),
@@ -18,6 +23,11 @@ const fileConfigSchema = z.object({
       registry_ttl_seconds: z.number().int().positive().optional(),
     })
     .optional(),
+  polling: z
+    .object({
+      interval_seconds: z.number().int().positive().optional(),
+    })
+    .optional(),
   database: z
     .object({
       path: z.string().optional(),
@@ -28,6 +38,9 @@ const fileConfigSchema = z.object({
 });
 
 export type AppConfig = {
+  app: {
+    logLevel: string;
+  };
   telegram: {
     token: string;
     maxSubscriptionsPerUser: number;
@@ -35,6 +48,9 @@ export type AppConfig = {
   morpho: {
     graphqlUrl: string;
     registryTtlSeconds: number;
+  };
+  polling: {
+    intervalSeconds: number;
   };
   database: {
     path: string;
@@ -66,6 +82,7 @@ export function loadConfig(): AppConfig {
 
   const graphqlUrl = process.env.MORPHO_GQL_URL ?? fileConfig.morpho?.graphql_url;
   const telegramToken = process.env.TELEGRAM_TOKEN ?? fileConfig.telegram?.token;
+  const logLevel = process.env.LOG_LEVEL ?? fileConfig.app?.log_level ?? 'info';
   const registryTtlSeconds = Number(
     process.env.REGISTRY_TTL_SECONDS ?? fileConfig.morpho?.registry_ttl_seconds ?? 1800,
   );
@@ -73,6 +90,9 @@ export function loadConfig(): AppConfig {
     process.env.MAX_SUBSCRIPTIONS_PER_USER ??
       fileConfig.telegram?.max_subscriptions_per_user ??
       50,
+  );
+  const pollingIntervalSeconds = Number(
+    process.env.POLL_INTERVAL ?? fileConfig.polling?.interval_seconds ?? 30,
   );
   const dbPath = process.env.DB_PATH ?? fileConfig.database?.path ?? 'data/db.sqlite';
   const busyTimeoutMs = Number(
@@ -84,6 +104,9 @@ export function loadConfig(): AppConfig {
     true;
 
   return {
+    app: {
+      logLevel,
+    },
     telegram: {
       token: requireString(
         telegramToken,
@@ -97,6 +120,9 @@ export function loadConfig(): AppConfig {
         `Missing Morpho GraphQL URL. Set MORPHO_GQL_URL or provide morpho.graphql_url in ${configPath}`,
       ),
       registryTtlSeconds,
+    },
+    polling: {
+      intervalSeconds: pollingIntervalSeconds,
     },
     database: {
       path: dbPath,
