@@ -112,7 +112,7 @@ function buildVaultSearchKeyboard(
   }
 
   return keyboard
-    .text('✏️ Change search', 'sub:search_prompt')
+    .text('✏️ Change search', 'sub:search_again')
     .text('🔙 Chains', 'sub:begin')
     .row()
     .text('❌ Cancel', CANCEL_CALLBACK);
@@ -128,13 +128,6 @@ function buildMainKeyboard(): Keyboard {
 
 function buildPromptKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text('❌ Cancel', CANCEL_CALLBACK);
-}
-
-function buildSearchPromptKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('✍️ Enter search', 'sub:search_prompt')
-    .row()
-    .text('❌ Cancel', CANCEL_CALLBACK);
 }
 
 function buildMonitorTypeKeyboard(): InlineKeyboard {
@@ -231,9 +224,9 @@ async function showMainMenu(ctx: BotContext, message = 'Choose an action:'): Pro
 }
 
 async function promptForSearch(ctx: BotContext, chain: string): Promise<void> {
-  ctx.session.awaiting = null;
-  await ctx.reply(`Selected ${chain}. Tap below, then send a search string for name, symbol, token, or address.`, {
-    reply_markup: buildSearchPromptKeyboard(),
+  ctx.session.awaiting = { type: 'search' };
+  await ctx.reply(`Selected ${chain}. Now send a search string for name, symbol, token, or address.`, {
+    reply_markup: buildPromptKeyboard(),
   });
 }
 
@@ -317,7 +310,7 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
     await promptForSearch(ctx, chain);
   });
 
-  bot.callbackQuery('sub:search_prompt', async (ctx) => {
+  bot.callbackQuery('sub:search_again', async (ctx) => {
     await ctx.answerCallbackQuery();
     const chain = ctx.session.draft.chain;
     if (!chain) {
@@ -325,10 +318,8 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
       return;
     }
 
-    ctx.session.awaiting = { type: 'search' };
-    await ctx.reply(`Send your search string for ${chain}.`, {
-      reply_markup: buildPromptKeyboard(),
-    });
+    ctx.session.draft.page = 0;
+    await promptForSearch(ctx, chain);
   });
 
   bot.callbackQuery(/^sub:page:(.+?):(.+?):(\d+)$/i, async (ctx) => {
