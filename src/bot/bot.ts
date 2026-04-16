@@ -40,6 +40,7 @@ type BotContext = Context & SessionFlavor<BotSession>;
 const PAGE_SIZE = 10;
 const MAIN_BUTTON_SUBSCRIBE = '➕ Add subscription';
 const MAIN_BUTTON_SUBSCRIPTIONS = '📋 My subscriptions';
+const MAIN_BUTTON_ABOUT = 'ℹ️ About';
 const CANCEL_CALLBACK = 'flow:cancel';
 
 function initialSession(): BotSession {
@@ -122,6 +123,8 @@ function buildMainKeyboard(): Keyboard {
   return new Keyboard()
     .text(MAIN_BUTTON_SUBSCRIBE)
     .text(MAIN_BUTTON_SUBSCRIPTIONS)
+    .row()
+    .text(MAIN_BUTTON_ABOUT)
     .resized()
     .persistent();
 }
@@ -221,6 +224,19 @@ async function showMainMenu(ctx: BotContext, message = 'Choose an action:'): Pro
   await ctx.reply(message, {
     reply_markup: buildMainKeyboard(),
   });
+}
+
+async function showAbout(ctx: BotContext): Promise<void> {
+  await ctx.reply(
+    [
+      'About',
+      'GitHub: https://github.com/ratik/morpho-tg-watcher-node',
+      'Author: Sergey Ratiashvili <@nnnooo1111>',
+    ].join('\n'),
+    {
+      reply_markup: buildMainKeyboard(),
+    },
+  );
 }
 
 async function promptForSearch(ctx: BotContext, chain: string): Promise<void> {
@@ -480,6 +496,12 @@ export function createTelegramBot(db: SqliteDb, config: AppConfig): Bot<BotConte
     if (messageText === MAIN_BUTTON_SUBSCRIPTIONS) {
       ctx.session.awaiting = null;
       await renderSubscriptions(ctx, db);
+      return;
+    }
+
+    if (messageText === MAIN_BUTTON_ABOUT) {
+      resetDraft(ctx);
+      await showAbout(ctx);
       return;
     }
 
